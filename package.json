@@ -6,11 +6,10 @@
   "types": "dist/transfer-prompts.d.ts",
   "scripts": {
     "start": "npx ts-node transfer-prompts.ts",
-    "dry-run": "DRY_RUN=true npx ts-node transfer-prompts.ts",
-    "transfer-all": "TRANSFER_ALL_VERSIONS=true npx ts-node transfer-prompts.ts",
-    "start:sdk": "npx ts-node transfer-prompts-sdk.ts",
-    "dry-run:sdk": "DRY_RUN=true npx ts-node transfer-prompts-sdk.ts",
-    "transfer-all:sdk": "TRANSFER_ALL_VERSIONS=true npx ts-node transfer-prompts-sdk.ts",
+    "dry-run": "npx ts-node transfer-prompts.ts --dry-run",
+    "transfer-all": "npx ts-node transfer-prompts.ts --all-versions",
+    "export": "npx ts-node transfer-prompts.ts export",
+    "import": "npx ts-node transfer-prompts.ts import",
     "build": "tsc",
     "build:run": "tsc && node dist/transfer-prompts.js"
   },
@@ -37,7 +36,6 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@langfuse/client": "^4.5.1",
     "dotenv": "^17.2.3"
   }
 }

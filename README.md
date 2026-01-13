@@ -9,11 +9,12 @@ Transfer all prompts from one Langfuse instance to another. Perfect for migratin
 - 🔄 Option to transfer all versions or just the latest
 - 🔍 Dry-run mode to preview changes before applying
 - 📊 Detailed transfer summary with error reporting
+- 📦 JSON export/import mode for offline backup and version control
 - 🔌 Zero dependencies - uses only Node.js built-in modules
 
 ## Configuration
 
-### Set your environment variables:
+Set your credentials via environment variables (or `.env` file):
 
 ```bash
 # Source instance (Langfuse US Cloud)
@@ -29,26 +30,66 @@ export DEST_LANGFUSE_BASE_URL="https://your-private-langfuse.example.com"
 
 ## Usage
 
-### Basic Transfer (Latest Versions Only)
-
-```bash
-node transfer-prompts.js
+```
+npx ts-node transfer-prompts.ts [command] [options]
 ```
 
-### Dry Run (Preview Without Making Changes)
+### Commands
+
+| Command    | Description                                         |
+| ---------- | --------------------------------------------------- |
+| `transfer` | Transfer prompts directly source → destination (default) |
+| `export`   | Export prompts from source to a JSON file           |
+| `import`   | Import prompts from a JSON file to destination      |
+
+### Options
+
+| Option           | Description                                      |
+| ---------------- | ------------------------------------------------ |
+| `--dry-run`      | Preview changes without making them              |
+| `--all-versions` | Transfer all versions (not just latest)          |
+| `--file <path>`  | JSON file path for export/import (default: prompts.json) |
+| `--help, -h`     | Show help message                                |
+
+### Examples
 
 ```bash
-DRY_RUN=true node transfer-prompts.js
-# or
-pnpm dry-run
+# Basic transfer (latest versions only)
+npx ts-node transfer-prompts.ts
+
+# Dry run (preview without making changes)
+npx ts-node transfer-prompts.ts --dry-run
+
+# Transfer all versions
+npx ts-node transfer-prompts.ts --all-versions
+
+# Export prompts to JSON
+npx ts-node transfer-prompts.ts export --file backup.json
+
+# Import prompts from JSON
+npx ts-node transfer-prompts.ts import --file backup.json
+
+# Dry-run import (preview without changes)
+npx ts-node transfer-prompts.ts import --file backup.json --dry-run
 ```
 
-### Transfer All Versions
+### JSON File Format
 
-```bash
-TRANSFER_ALL_VERSIONS=true node transfer-prompts.js
-# or
-pnpm transfer-all
+```json
+{
+  "exportedAt": "2025-01-13T10:00:00.000Z",
+  "sourceBaseUrl": "https://us.cloud.langfuse.com",
+  "prompts": [
+    {
+      "name": "my-prompt",
+      "type": "text",
+      "prompt": "You are a helpful assistant...",
+      "config": {},
+      "labels": ["production"],
+      "tags": ["v1"]
+    }
+  ]
+}
 ```
 
 ## Langfuse Instance URLs

@@ -7,12 +7,23 @@
  * to another instance (e.g., private self-hosted).
  *
  * Usage:
- *   npx ts-node transfer-prompts.ts
+ *   npx ts-node transfer-prompts.ts [command] [options]
  *
+ * Commands:
+ *   transfer    Transfer prompts directly from source to destination (default)
+ *   export      Export prompts from source to a JSON file
+ *   import      Import prompts from a JSON file to destination
+ *
+ * Options:
+ *   --dry-run           Preview changes without making them
+ *   --all-versions      Transfer all versions (not just latest)
+ *   --file <path>       JSON file path for export/import (default: prompts.json)
+ *   --help, -h          Show this help message
  */
 
 import * as https from "https";
 import * as http from "http";
+import * as fs from "fs";
 import { URL } from "url";
 import dotenv from "dotenv";
 dotenv.config();
@@ -34,6 +45,28 @@ interface Config {
   };
   transferAllVersions: boolean;
   dryRun: boolean;
+  mode: "transfer" | "export" | "import";
+  jsonFile: string;
+}
+
+interface ChatMessage {
+  role: string;
+  content: string;
+}
+
+interface CreatePromptRequest {
+  name: string;
+  type: "text" | "chat";
+  prompt: string | ChatMessage[];
+  config?: Record<string, unknown>;
+  labels?: string[];
+  tags?: string[];
+}
+
+interface PromptsExport {
+  exportedAt: string;
+  sourceBaseUrl: string;
+  prompts: CreatePromptRequest[];
 }
 
 interface PromptMeta {
@@ -51,20 +84,6 @@ interface PromptData {
   labels?: string[];
   tags?: string[];
   version?: number;
-}
-
-interface ChatMessage {
-  role: string;
-  content: string;
-}
-
-interface CreatePromptRequest {
-  name: string;
-  type: "text" | "chat";
-  prompt: string | ChatMessage[];
-  config?: Record<string, unknown>;
-  labels?: string[];
-  tags?: string[];
 }
 
 interface ListPromptsResponse {
@@ -97,6 +116,111 @@ interface TransferOptions {
 type LogType = "info" | "success" | "warning" | "error" | "skip";
 
 // ============================================================================
+// CLI Argument Parsing
+// ============================================================================
+
+interface CliArgs {
+  mode: "transfer" | "export" | "import";
+  dryRun: boolean;
+  allVersions: boolean;
+  file: string;
+  help: boolean;
+}
+
+function parseArgs(): CliArgs {
+  const args = process.argv.slice(2);
+  const result: CliArgs = {
+    mode: "transfer",
+    dryRun: false,
+    allVersions: false,
+    file: "prompts.json",
+    help: false,
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    switch (arg) {
+      case "transfer":
+      case "export":
+      case "import":
+        result.mode = arg;
+        break;
+      case "--dry-run":
+        result.dryRun = true;
+        break;
+      case "--all-versions":
+        result.allVersions = true;
+        break;
+      case "--file":
+        if (i + 1 < args.length) {
+          result.file = args[++i];
+        } else {
+          console.error("Error: --file requires a path argument");
+          process.exit(1);
+        }
+        break;
+      case "--help":
+      case "-h":
+        result.help = true;
+        break;
+      default:
+        if (arg.startsWith("-")) {
+          console.error(`Unknown option: ${arg}`);
+          console.error('Use --help for usage information');
+          process.exit(1);
+        }
+    }
+  }
+
+  return result;
+}
+
+function printHelp(): void {
+  console.log(`
+Langfuse Prompt Transfer Tool
+
+Usage:
+  npx ts-node transfer-prompts.ts [command] [options]
+
+Commands:
+  transfer    Transfer prompts directly from source to destination (default)
+  export      Export prompts from source to a JSON file
+  import      Import prompts from a JSON file to destination
+
+Options:
+  --dry-run           Preview changes without making them
+  --all-versions      Transfer all versions (not just latest)
+  --file <path>       JSON file path for export/import (default: prompts.json)
+  --help, -h          Show this help message
+
+Environment Variables (for credentials):
+  SOURCE_LANGFUSE_PUBLIC_KEY    Source instance public key
+  SOURCE_LANGFUSE_SECRET_KEY    Source instance secret key
+  SOURCE_LANGFUSE_BASE_URL      Source instance URL (default: https://us.cloud.langfuse.com)
+  DEST_LANGFUSE_PUBLIC_KEY      Destination instance public key
+  DEST_LANGFUSE_SECRET_KEY      Destination instance secret key
+  DEST_LANGFUSE_BASE_URL        Destination instance URL
+
+Examples:
+  # Transfer prompts (dry run)
+  npx ts-node transfer-prompts.ts --dry-run
+
+  # Transfer all versions
+  npx ts-node transfer-prompts.ts --all-versions
+
+  # Export to JSON
+  npx ts-node transfer-prompts.ts export --file backup.json
+
+  # Import from JSON (dry run)
+  npx ts-node transfer-prompts.ts import --file backup.json --dry-run
+`);
+}
+
+// Parse CLI arguments
+const cliArgs = parseArgs();
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
@@ -112,8 +236,10 @@ const config: Config = {
     secretKey: process.env.DEST_LANGFUSE_SECRET_KEY || "",
     baseUrl: process.env.DEST_LANGFUSE_BASE_URL || "",
   },
-  transferAllVersions: process.env.TRANSFER_ALL_VERSIONS === "true",
-  dryRun: process.env.DRY_RUN === "true",
+  transferAllVersions: cliArgs.allVersions,
+  dryRun: cliArgs.dryRun,
+  mode: cliArgs.mode,
+  jsonFile: cliArgs.file,
 };
 
 // ============================================================================
@@ -356,6 +482,72 @@ class PromptTransfer {
   }
 
   /**
+   * Test connection to source instance
+   */
+  private async testSourceConnection(): Promise<void> {
+    this.log("Testing connection to source instance...");
+    try {
+      const sourceInfo = await this.source.testConnection();
+      this.log(
+        `  Connected to: ${sourceInfo.data?.[0]?.name || "Project"}`,
+        "success"
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      throw new Error(`Cannot connect to source: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Test connection to destination instance
+   */
+  private async testDestConnection(): Promise<void> {
+    this.log("Testing connection to destination instance...");
+    try {
+      const destInfo = await this.dest.testConnection();
+      this.log(
+        `  Connected to: ${destInfo.data?.[0]?.name || "Project"}`,
+        "success"
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      throw new Error(`Cannot connect to destination: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Build a CreatePromptRequest from prompt data
+   */
+  private buildCreateRequest(prompt: {
+    name: string;
+    type: "text" | "chat";
+    prompt: string | ChatMessage[];
+    config?: Record<string, unknown>;
+    labels?: string[];
+    tags?: string[];
+  }): CreatePromptRequest {
+    const request: CreatePromptRequest = {
+      name: prompt.name,
+      type: prompt.type,
+      prompt: prompt.prompt,
+    };
+
+    if (prompt.config && Object.keys(prompt.config).length > 0) {
+      request.config = prompt.config;
+    }
+    if (prompt.labels && prompt.labels.length > 0) {
+      request.labels = prompt.labels.filter((l) => l !== "latest");
+    }
+    if (prompt.tags && prompt.tags.length > 0) {
+      request.tags = prompt.tags;
+    }
+
+    return request;
+  }
+
+  /**
    * Transfer all prompts from source to destination
    */
   async transferAll(): Promise<TransferStats> {
@@ -457,39 +649,37 @@ class PromptTransfer {
 
     // Fetch the full prompt data with resolve=false to preserve prompt references
     const promptData = await this.source.getPrompt(name, { version, resolve: false });
-
-    // Prepare the create request
-    const createRequest: CreatePromptRequest = {
-      name: promptData.name,
-      type: promptData.type,
-      prompt: promptData.prompt,
-    };
-
-    // Add optional fields if present
-    if (promptData.config && Object.keys(promptData.config).length > 0) {
-      createRequest.config = promptData.config;
-    }
-
-    if (promptData.labels && promptData.labels.length > 0) {
-      // Filter out 'latest' as it's managed by Langfuse
-      createRequest.labels = promptData.labels.filter((l) => l !== "latest");
-    }
-
-    if (promptData.tags && promptData.tags.length > 0) {
-      createRequest.tags = promptData.tags;
-    }
+    const createRequest = this.buildCreateRequest(promptData);
 
     // Log the prompt being transferred
+    this.logPromptDetails(createRequest, promptData);
+
+    if (this.dryRun) {
+      this.log(`  [DRY RUN] Would create prompt version`, "skip");
+      return;
+    }
+
+    // Create the prompt in destination
+    await this.createPromptInDest(createRequest);
+  }
+
+  /**
+   * Log prompt details during transfer/import
+   */
+  private logPromptDetails(
+    request: CreatePromptRequest,
+    promptData: { type: string; prompt: string | ChatMessage[] }
+  ): void {
     this.log(`  Type: ${promptData.type}`);
-    if (createRequest.labels && createRequest.labels.length > 0) {
-      this.log(`  Labels: ${createRequest.labels.join(", ")}`);
+    if (request.labels && request.labels.length > 0) {
+      this.log(`  Labels: ${request.labels.join(", ")}`);
     }
-    if (createRequest.tags && createRequest.tags.length > 0) {
-      this.log(`  Tags: ${createRequest.tags.join(", ")}`);
+    if (request.tags && request.tags.length > 0) {
+      this.log(`  Tags: ${request.tags.join(", ")}`);
     }
-    if (createRequest.config) {
+    if (request.config) {
       this.log(
-        `  Config: ${JSON.stringify(createRequest.config).substring(0, 100)}...`
+        `  Config: ${JSON.stringify(request.config).substring(0, 100)}...`
       );
     }
 
@@ -506,16 +696,16 @@ class PromptTransfer {
         : 0;
       this.log(`  Prompt: ${msgCount} message(s)`);
     }
+  }
 
-    if (this.dryRun) {
-      this.log(`  [DRY RUN] Would create prompt version`, "skip");
-      return;
-    }
-
-    // Create the prompt in destination
+  /**
+   * Create a prompt in the destination instance
+   */
+  private async createPromptInDest(createRequest: CreatePromptRequest): Promise<PromptData> {
     try {
       const result = await this.dest.createPrompt(createRequest);
       this.log(`  Created version ${result.version} in destination`, "success");
+      return result;
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -527,6 +717,7 @@ class PromptTransfer {
         );
         const result = await this.dest.createPrompt(createRequest);
         this.log(`  Added new version ${result.version}`, "success");
+        return result;
       } else {
         throw error;
       }
@@ -537,32 +728,8 @@ class PromptTransfer {
    * Test connections to both instances
    */
   private async testConnections(): Promise<void> {
-    this.log("Testing connection to source instance...");
-    try {
-      const sourceInfo = await this.source.testConnection();
-      this.log(
-        `  Connected to: ${sourceInfo.data?.[0]?.name || "Project"}`,
-        "success"
-      );
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      throw new Error(`Cannot connect to source: ${errorMessage}`);
-    }
-
-    this.log("Testing connection to destination instance...");
-    try {
-      const destInfo = await this.dest.testConnection();
-      this.log(
-        `  Connected to: ${destInfo.data?.[0]?.name || "Project"}`,
-        "success"
-      );
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      throw new Error(`Cannot connect to destination: ${errorMessage}`);
-    }
-
+    await this.testSourceConnection();
+    await this.testDestConnection();
     console.log();
   }
 
@@ -591,6 +758,145 @@ class PromptTransfer {
 
     console.log("=".repeat(60) + "\n");
   }
+
+  /**
+   * Export all prompts to a JSON file
+   */
+  async exportToJson(filePath: string): Promise<void> {
+    console.log("\n" + "=".repeat(60));
+    console.log("[START] Langfuse Prompt Export");
+    console.log("=".repeat(60) + "\n");
+
+    await this.testSourceConnection();
+
+    // Get all prompts from source
+    this.log("\nFetching prompts from source instance...");
+    const sourcePrompts = await this.source.getAllPrompts();
+
+    if (sourcePrompts.length === 0) {
+      this.log("No prompts found in source instance", "warning");
+      return;
+    }
+
+    this.log(`Found ${sourcePrompts.length} prompt(s)\n`);
+
+    // Fetch full data for each prompt
+    const exportData: PromptsExport = {
+      exportedAt: new Date().toISOString(),
+      sourceBaseUrl: config.source.baseUrl,
+      prompts: [],
+    };
+
+    for (const promptMeta of sourcePrompts) {
+      const { name, versions = [] } = promptMeta;
+      this.stats.total++;
+
+      try {
+        // Get the latest version
+        const latestVersion = Math.max(...versions);
+        this.log(`Exporting: ${name} (version ${latestVersion})...`);
+
+        const promptData = await this.source.getPrompt(name, {
+          version: latestVersion,
+          resolve: false,
+        });
+
+        exportData.prompts.push(this.buildCreateRequest(promptData));
+        this.stats.transferred++;
+      } catch (error) {
+        this.stats.failed++;
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        this.stats.errors.push({ name, error: errorMessage });
+        this.log(`Failed to export ${name}: ${errorMessage}`, "error");
+      }
+    }
+
+    // Write to file
+    fs.writeFileSync(filePath, JSON.stringify(exportData, null, 2));
+    this.log(`\nExported ${this.stats.transferred} prompt(s) to ${filePath}`, "success");
+
+    if (this.stats.failed > 0) {
+      this.log(`Failed to export ${this.stats.failed} prompt(s)`, "error");
+      for (const { name, error } of this.stats.errors) {
+        console.log(`  - ${name}: ${error}`);
+      }
+    }
+
+    console.log("=".repeat(60) + "\n");
+  }
+
+  /**
+   * Import prompts from a JSON file
+   */
+  async importFromJson(filePath: string): Promise<TransferStats> {
+    console.log("\n" + "=".repeat(60));
+    console.log("[START] Langfuse Prompt Import");
+    console.log("=".repeat(60) + "\n");
+
+    if (this.dryRun) {
+      this.log("DRY RUN MODE - No changes will be made\n", "warning");
+    }
+
+    // Read and parse JSON file
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File not found: ${filePath}`);
+    }
+
+    const fileContent = fs.readFileSync(filePath, "utf-8");
+    let exportData: PromptsExport;
+
+    try {
+      exportData = JSON.parse(fileContent);
+    } catch {
+      throw new Error(`Invalid JSON in file: ${filePath}`);
+    }
+
+    // Validate structure
+    if (!exportData.prompts || !Array.isArray(exportData.prompts)) {
+      throw new Error("Invalid export file: missing 'prompts' array");
+    }
+
+    this.log(`Import file: ${filePath}`);
+    this.log(`Exported at: ${exportData.exportedAt || "unknown"}`);
+    this.log(`Source: ${exportData.sourceBaseUrl || "unknown"}`);
+    this.log(`Prompts: ${exportData.prompts.length}\n`);
+
+    await this.testDestConnection();
+    console.log();
+
+    // Import each prompt
+    for (const prompt of exportData.prompts) {
+      this.stats.total++;
+      console.log(`${"─".repeat(50)}`);
+      this.log(`Importing: ${prompt.name}`);
+      this.log(`  Type: ${prompt.type}`);
+      if (prompt.labels && prompt.labels.length > 0) {
+        this.log(`  Labels: ${prompt.labels.join(", ")}`);
+      }
+
+      if (this.dryRun) {
+        this.log(`  [DRY RUN] Would create prompt`, "skip");
+        this.stats.transferred++;
+        continue;
+      }
+
+      try {
+        // Prompt from JSON is already a CreatePromptRequest
+        await this.createPromptInDest(prompt);
+        this.stats.transferred++;
+      } catch (error) {
+        this.stats.failed++;
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        this.stats.errors.push({ name: prompt.name, error: errorMessage });
+        this.log(`  Failed: ${errorMessage}`, "error");
+      }
+    }
+
+    this.printSummary();
+    return this.stats;
+  }
 }
 
 // ============================================================================
@@ -598,34 +904,41 @@ class PromptTransfer {
 // ============================================================================
 
 async function main(): Promise<void> {
-  // Validate configuration
+  // Handle help flag
+  if (cliArgs.help) {
+    printHelp();
+    process.exit(0);
+  }
+
+  // Validate configuration based on mode
   const missingVars: string[] = [];
 
-  if (!config.source.publicKey) missingVars.push("SOURCE_LANGFUSE_PUBLIC_KEY");
-  if (!config.source.secretKey) missingVars.push("SOURCE_LANGFUSE_SECRET_KEY");
-  if (!config.dest.publicKey) missingVars.push("DEST_LANGFUSE_PUBLIC_KEY");
-  if (!config.dest.secretKey) missingVars.push("DEST_LANGFUSE_SECRET_KEY");
-  if (!config.dest.baseUrl) missingVars.push("DEST_LANGFUSE_BASE_URL");
+  if (config.mode === "export") {
+    // Export mode only needs source credentials
+    if (!config.source.publicKey) missingVars.push("SOURCE_LANGFUSE_PUBLIC_KEY");
+    if (!config.source.secretKey) missingVars.push("SOURCE_LANGFUSE_SECRET_KEY");
+  } else if (config.mode === "import") {
+    // Import mode only needs destination credentials
+    if (!config.dest.publicKey) missingVars.push("DEST_LANGFUSE_PUBLIC_KEY");
+    if (!config.dest.secretKey) missingVars.push("DEST_LANGFUSE_SECRET_KEY");
+    if (!config.dest.baseUrl) missingVars.push("DEST_LANGFUSE_BASE_URL");
+  } else {
+    // Transfer mode needs both
+    if (!config.source.publicKey) missingVars.push("SOURCE_LANGFUSE_PUBLIC_KEY");
+    if (!config.source.secretKey) missingVars.push("SOURCE_LANGFUSE_SECRET_KEY");
+    if (!config.dest.publicKey) missingVars.push("DEST_LANGFUSE_PUBLIC_KEY");
+    if (!config.dest.secretKey) missingVars.push("DEST_LANGFUSE_SECRET_KEY");
+    if (!config.dest.baseUrl) missingVars.push("DEST_LANGFUSE_BASE_URL");
+  }
 
   if (missingVars.length > 0) {
     console.error("[ERROR] Missing required environment variables:");
     console.error(`   ${missingVars.join("\n   ")}`);
-    console.error("\nUsage:");
-    console.error("  SOURCE_LANGFUSE_PUBLIC_KEY=pk-lf-... \\");
-    console.error("  SOURCE_LANGFUSE_SECRET_KEY=sk-lf-... \\");
-    console.error(
-      "  SOURCE_LANGFUSE_BASE_URL=https://us.cloud.langfuse.com \\"
-    );
-    console.error("  DEST_LANGFUSE_PUBLIC_KEY=pk-lf-... \\");
-    console.error("  DEST_LANGFUSE_SECRET_KEY=sk-lf-... \\");
-    console.error(
-      "  DEST_LANGFUSE_BASE_URL=https://your-private-instance.com \\"
-    );
-    console.error("  npx ts-node transfer-prompts.ts");
+    console.error(`\nRun with --help for usage information.`);
     process.exit(1);
   }
 
-  // Create clients
+  // Create clients (only create what's needed for the mode)
   const sourceClient = new LangfuseClient(
     config.source.publicKey,
     config.source.secretKey,
@@ -638,18 +951,26 @@ async function main(): Promise<void> {
     config.dest.baseUrl
   );
 
-  // Run transfer
+  // Create transfer instance
   const transfer = new PromptTransfer(sourceClient, destClient, {
     dryRun: config.dryRun,
     transferAllVersions: config.transferAllVersions,
   });
 
   try {
-    const stats = await transfer.transferAll();
-    process.exit(stats.failed > 0 ? 1 : 0);
+    if (config.mode === "export") {
+      await transfer.exportToJson(config.jsonFile);
+      process.exit(0);
+    } else if (config.mode === "import") {
+      const stats = await transfer.importFromJson(config.jsonFile);
+      process.exit(stats.failed > 0 ? 1 : 0);
+    } else {
+      const stats = await transfer.transferAll();
+      process.exit(stats.failed > 0 ? 1 : 0);
+    }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`\n[ERROR] Transfer failed: ${errorMessage}`);
+    console.error(`\n[ERROR] ${config.mode} failed: ${errorMessage}`);
     process.exit(1);
   }
 }
@@ -667,4 +988,5 @@ export type {
   CreatePromptRequest,
   TransferStats,
   TransferOptions,
+  PromptsExport,
 };
