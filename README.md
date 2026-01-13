@@ -75,6 +75,34 @@ For each prompt, the tool transfers:
 
 > **Note:** The `latest` label is automatically managed by Langfuse and is excluded from transfers.
 
+## Prompt References (Composability)
+
+This tool preserves prompt references using Langfuse's composability syntax:
+
+```
+@@@langfusePrompt:name=OtherPrompt|label=production@@@
+```
+
+References are transferred as-is (unresolved) so they work correctly in the destination instance.
+
+### Important Note: Handling Dependent Prompts
+
+The tool does **not** build a dependency graph, so prompts are transferred in arbitrary order. If a prompt references another prompt that hasn't been created yet, you'll see errors like:
+
+```
+[ERROR] Errors:
+  - my_prompt: HTTP 400: {"message":"Prompt dependency not found: BasePrompt - label latest","error":"InvalidRequestError"}
+```
+
+**Workaround:** Run the script twice.
+
+1. **First run** - Creates all prompts without dependencies (dependent prompts will fail)
+2. **Second run** - Creates dependent prompts (now that their dependencies exist)
+
+Note: This will create 2 versions for dependent prompts. You can clean up the extra versions manually in the Langfuse UI if needed.
+
+> **Future Improvement:** Build a dependency graph to transfer prompts in topological order, ensuring dependencies are created before dependents.
+
 ## API Reference
 
 The tool uses the Langfuse Public API v2:

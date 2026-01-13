@@ -258,10 +258,12 @@ class LangfuseClient {
   /**
    * Get a specific prompt by name
    * GET /api/public/v2/prompts/{promptName}
+   *
+   * @param options.resolve - Set to false to get raw prompt content without resolving references
    */
   async getPrompt(
     name: string,
-    options: { version?: number; label?: string } = {}
+    options: { version?: number; label?: string; resolve?: boolean } = {}
   ): Promise<PromptData> {
     // URL encode the prompt name (handles folders like "folder/prompt-name")
     const encodedName = encodeURIComponent(name);
@@ -270,6 +272,7 @@ class LangfuseClient {
     if (options.version !== undefined)
       params.set("version", options.version.toString());
     if (options.label) params.set("label", options.label);
+    if (options.resolve === false) params.set("resolve", "false");
 
     const query = params.toString();
     const path = `/api/public/v2/prompts/${encodedName}${
@@ -452,8 +455,8 @@ class PromptTransfer {
   ): Promise<void> {
     this.log(`  Fetching version ${version}...`);
 
-    // Fetch the full prompt data
-    const promptData = await this.source.getPrompt(name, { version });
+    // Fetch the full prompt data with resolve=false to preserve prompt references
+    const promptData = await this.source.getPrompt(name, { version, resolve: false });
 
     // Prepare the create request
     const createRequest: CreatePromptRequest = {
