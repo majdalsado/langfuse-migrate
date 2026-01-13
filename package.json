@@ -1,0 +1,43 @@
+{
+  "name": "langfuse-prompt-transfer",
+  "version": "1.0.0",
+  "description": "Transfer prompts between Langfuse instances (e.g., from US Cloud to private self-hosted)",
+  "main": "dist/transfer-prompts.js",
+  "types": "dist/transfer-prompts.d.ts",
+  "scripts": {
+    "start": "npx ts-node transfer-prompts.ts",
+    "dry-run": "DRY_RUN=true npx ts-node transfer-prompts.ts",
+    "transfer-all": "TRANSFER_ALL_VERSIONS=true npx ts-node transfer-prompts.ts",
+    "start:sdk": "npx ts-node transfer-prompts-sdk.ts",
+    "dry-run:sdk": "DRY_RUN=true npx ts-node transfer-prompts-sdk.ts",
+    "transfer-all:sdk": "TRANSFER_ALL_VERSIONS=true npx ts-node transfer-prompts-sdk.ts",
+    "build": "tsc",
+    "build:run": "tsc && node dist/transfer-prompts.js"
+  },
+  "keywords": [
+    "langfuse",
+    "prompt",
+    "transfer",
+    "migration",
+    "llm",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@langfuse/client": "^4.5.1",
+    "dotenv": "^17.2.3"
+  }
+}
